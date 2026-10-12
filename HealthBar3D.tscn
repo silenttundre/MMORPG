@@ -1,0 +1,64 @@
+[gd_scene load_steps=4 format=3 uid="uid://cquw7y8x7w6y5"]
+
+[ext_resource type="Script" path="res://HealthBar3D.gd" id="1_h5g2v"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_z7v1g"]
+bg_color = Color(0.8, 0, 0, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.1, 0.1, 0.1, 1)
+corner_radius_top_left = 2
+corner_radius_top_right = 2
+corner_radius_bottom_right = 2
+corner_radius_bottom_left = 2
+
+[sub_resource type="LabelSettings" id="LabelSettings_1b2c3"]
+font_size = 12
+outline_size = 2
+outline_color = Color(0, 0, 0, 1)
+
+[node name="HealthBar3D" type="Node3D"]
+script = ExtResource("1_h5g2v")
+
+[node name="SubViewportContainer" type="SubViewportContainer" parent="."]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -60.0
+offset_top = -20.0
+offset_right = 60.0
+offset_bottom = 8.0
+grow_horizontal = 2
+grow_vertical = 2
+stretch = true
+
+[node name="SubViewport" type="SubViewport" parent="SubViewportContainer"]
+transparent_bg = true
+handle_input_locally = false
+size = Vector2i(120, 28)
+render_target_update_mode = 4
+
+[node name="VBoxContainer" type="VBoxContainer" parent="SubViewportContainer/SubViewport"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="NameLabel" type="Label" parent="SubViewportContainer/SubViewport/VBoxContainer"]
+layout_mode = 2
+text = "Entity Name"
+label_settings = SubResource("LabelSettings_1b2c3")
+horizontal_alignment = 1
+
+[node name="ProgressBar" type="ProgressBar" parent="SubViewportContainer/SubViewport/VBoxContainer"]
+layout_mode = 2
+custom_minimum_size = Vector2(100, 12)
+theme_override_styles/fill = SubResource("StyleBoxFlat_z7v1g")
+max_value = 100.0
+value = 75.0
+show_percentage = false

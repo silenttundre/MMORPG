@@ -1,0 +1,154 @@
+[gd_scene load_steps=3 format=3 uid="uid://chexvnoss1iom"]
+
+[ext_resource type="Script" path="res://CharacterCreator.gd" id="1_abcde"]
+
+[sub_resource type="World3D" id="World3D_12345"]
+
+[node name="CharacterCreator" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_abcde")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -250.0
+offset_top = -390.0
+offset_right = 250.0
+offset_bottom = 390.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Title" type="Label" parent="VBoxContainer"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 32
+text = "Create Your Character"
+horizontal_alignment = 1
+
+[node name="PanelContainer" type="PanelContainer" parent="VBoxContainer"]
+layout_mode = 2
+custom_minimum_size = Vector2(400, 240)
+
+[node name="PreviewContainer" type="SubViewportContainer" parent="VBoxContainer/PanelContainer"]
+layout_mode = 2
+stretch = true
+mouse_filter = 2
+
+[node name="PreviewViewport" type="SubViewport" parent="VBoxContainer/PanelContainer/PreviewContainer"]
+unique_name_in_owner = true
+world_3d = SubResource("World3D_12345")
+transparent_bg = true
+handle_input_locally = false
+size = Vector2i(400, 240)
+render_target_update_mode = 4
+
+[node name="CharacterPreview" type="Node3D" parent="VBoxContainer/PanelContainer/PreviewContainer/PreviewViewport"]
+unique_name_in_owner = true
+
+[node name="Camera3D" type="Camera3D" parent="VBoxContainer/PanelContainer/PreviewContainer/PreviewViewport/CharacterPreview"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 4.2)
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="VBoxContainer/PanelContainer/PreviewContainer/PreviewViewport/CharacterPreview"]
+transform = Transform3D(1, 0, 0, 0, -4.37114e-08, 1, 0, -1, -4.37114e-08, 2, 3, 2)
+light_energy = 1.5
+
+[node name="PreviewFillLight" type="OmniLight3D" parent="VBoxContainer/PanelContainer/PreviewContainer/PreviewViewport/CharacterPreview"]
+position = Vector3(0, 2.2, 3)
+light_energy = 4.0
+omni_range = 8.0
+
+[node name="OptionsContainer" type="HBoxContainer" parent="VBoxContainer"]
+layout_mode = 2
+
+[node name="LeftPanel" type="VBoxContainer" parent="VBoxContainer/OptionsContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Label" type="Label" parent="VBoxContainer/OptionsContainer/LeftPanel"]
+layout_mode = 2
+text = "Choose Animal Head:"
+
+[node name="AnimalOptionButton" type="OptionButton" parent="VBoxContainer/OptionsContainer/LeftPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="Label2" type="Label" parent="VBoxContainer/OptionsContainer/LeftPanel"]
+layout_mode = 2
+text = "Choose Body Shape:"
+
+[node name="BodyShapeOptionButton" type="OptionButton" parent="VBoxContainer/OptionsContainer/LeftPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="Label3" type="Label" parent="VBoxContainer/OptionsContainer/LeftPanel"]
+layout_mode = 2
+text = "Choose Shirt:"
+
+[node name="ShirtOptionButton" type="OptionButton" parent="VBoxContainer/OptionsContainer/LeftPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="Label4" type="Label" parent="VBoxContainer/OptionsContainer/LeftPanel"]
+layout_mode = 2
+text = "Choose Pants:"
+
+[node name="PantsOptionButton" type="OptionButton" parent="VBoxContainer/OptionsContainer/LeftPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="Label5" type="Label" parent="VBoxContainer/OptionsContainer/LeftPanel"]
+layout_mode = 2
+text = "Choose Shoes:"
+
+[node name="ShoesOptionButton" type="OptionButton" parent="VBoxContainer/OptionsContainer/LeftPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="RightPanel" type="VBoxContainer" parent="VBoxContainer/OptionsContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Label" type="Label" parent="VBoxContainer/OptionsContainer/RightPanel"]
+layout_mode = 2
+text = "Body Color:"
+
+[node name="BodyColorPicker" type="ColorPicker" parent="VBoxContainer/OptionsContainer/RightPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+custom_minimum_size = Vector2(200, 115)
+color = Color(0.8, 0.7, 0.6, 1)
+
+[node name="UsernameContainer" type="HBoxContainer" parent="VBoxContainer"]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="VBoxContainer/UsernameContainer"]
+layout_mode = 2
+text = "Username:"
+
+[node name="UsernameInput" type="LineEdit" parent="VBoxContainer/UsernameContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Player123"
+placeholder_text = "Enter your username"
+
+[node name="CreateButton" type="Button" parent="VBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Create Character"
+
+[connection signal="color_changed" from="VBoxContainer/OptionsContainer/RightPanel/BodyColorPicker" to="." method="_on_color_changed"]
+[connection signal="item_selected" from="VBoxContainer/OptionsContainer/LeftPanel/AnimalOptionButton" to="." method="_on_any_option_changed"]
+[connection signal="item_selected" from="VBoxContainer/OptionsContainer/LeftPanel/BodyShapeOptionButton" to="." method="_on_any_option_changed"]
+[connection signal="item_selected" from="VBoxContainer/OptionsContainer/LeftPanel/ShirtOptionButton" to="." method="_on_any_option_changed"]
+[connection signal="item_selected" from="VBoxContainer/OptionsContainer/LeftPanel/PantsOptionButton" to="." method="_on_any_option_changed"]
+[connection signal="item_selected" from="VBoxContainer/OptionsContainer/LeftPanel/ShoesOptionButton" to="." method="_on_any_option_changed"]
+[connection signal="pressed" from="VBoxContainer/CreateButton" to="." method="_on_create_character"]
