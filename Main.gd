@@ -7,8 +7,9 @@ const MinimapView = preload("res://Minimap.gd")
 const BalloonVisuals = preload("res://BalloonFactory.gd")
 const AnimalVisuals = preload("res://AnimalFactory.gd")
 const EnemyVisuals = preload("res://EnemyFactory.gd")
-const MAIN_HALF := Vector2i(48, 36)
-const WORLD_HALF := Vector2i(154, 40)
+const MAIN_HALF := Vector2i(56, 45)
+const WORLD_HALF := Vector2i(190, 190)
+const LAKE_WATER := Rect2(-42, 83, 84, 58)
 const CRYSTALS_PER_ROUND := 36
 const BALLOON_TRAVEL_TIME := 14.0
 const SPEED := 7.0
@@ -16,6 +17,17 @@ const JUMP_SPEED := 8.5
 const GRAVITY := 22.0
 const MAX_HEALTH := 100
 const MAX_PLAYERS := 32
+const WORKSHOP_POS := Vector3(0, 1, 0)
+const PLANE_PARTS := {
+	"timber": {"label": "Wing timber", "world": "Wildwood", "position": Vector3(-155, 0.75, 36), "color": Color("91dfa5")},
+	"engine": {"label": "Engine core", "world": "Mountains", "position": Vector3(155, 0.75, 36), "color": Color("a4d8f4")},
+	"propeller": {"label": "Propeller", "world": "Arctic", "position": Vector3(-55, 0.75, -149), "color": Color("c7ebf2")},
+	"alloy": {"label": "Light alloy", "world": "Lake", "position": Vector3(55, 0.75, 150), "color": Color("90d6da")},
+	"lens": {"label": "Navigation lens", "world": "Crystal Caverns", "position": Vector3(-157, 0.75, -148), "color": Color("d2afff")},
+	"fuel": {"label": "Fuel cell", "world": "Volcano", "position": Vector3(157, 0.75, -148), "color": Color("ffab76")},
+	"fabric": {"label": "Wing fabric", "world": "Golden Dunes", "position": Vector3(-157, 0.75, 148), "color": Color("ffe2a1")},
+	"compass": {"label": "Compass", "world": "Jungle Ruins", "position": Vector3(157, 0.75, 148), "color": Color("b1f2b2")}
+}
 const SHOP_ITEMS := {
 	"food": {"label": "Snack - heal 30 HP + speed boost", "cost": 2},
 	"lantern": {"label": "Lantern - portable light", "cost": 3},
@@ -23,7 +35,10 @@ const SHOP_ITEMS := {
 	"sword": {"label": "Sword - stronger attacks", "cost": 4},
 	"bicycle": {"label": "Bicycle - faster travel", "cost": 6},
 	"motorbike": {"label": "Motorbike - quick travel", "cost": 9},
-	"car": {"label": "Car - fastest travel", "cost": 12}
+	"car": {"label": "Car - fastest travel", "cost": 12},
+	"rowboat": {"label": "Rowboat - cross the lake", "cost": 7},
+	"speedboat": {"label": "Speedboat - fast lake travel", "cost": 13},
+	"blueprint": {"label": "Plane blueprint - assembly guide [P]", "cost": 8}
 }
 
 var players: Array[CharacterBody3D] = []
@@ -40,13 +55,17 @@ var health_bars: Array[ProgressBar] = []
 var attack_cooldown: Array[float] = [0.0, 0.0]
 var camera: Camera3D
 var score_label: Label
+var score_panel: ColorRect
 var message_label: Label
 var message_time := 0.0
 var rng := RandomNumberGenerator.new()
 var obstacle_zones: Array[Rect2] = []
 var location_label: Label
+var location_panel: ColorRect
 var palette := [Color("ef6f6c"), Color("ffd166"), Color("61d095"), Color("5aa9e6"), Color("b388eb"), Color("ff9f1c")]
 var crystal_nodes: Dictionary = {}
+var material_nodes: Dictionary = {}
+var found_parts: Array[Dictionary] = [{}, {}]
 var next_crystal_id := 0
 var connected := false
 var peer_slots: Dictionary = {}
@@ -74,6 +93,8 @@ var world_clock := 0.0
 var shop_panel: PanelContainer
 var shop_buttons: Dictionary = {}
 var shop_status: Label
+var blueprint_panel: PanelContainer
+var blueprint_text: Label
 var minimap_panel: PanelContainer
 var minimap_view: Control
 var minimap_timer := 0.0
@@ -82,6 +103,7 @@ var minimap_timer := 0.0
 func _ready() -> void:
 	rng.seed = 481516
 	UIManager.visible = false
+	setup_plane_input()
 	make_world()
 	make_players()
 	appearances = [GameManager.character_data.duplicate(), {}]
@@ -93,6 +115,14 @@ func _ready() -> void:
 		show_message("Hosting on UDP port %d. Waiting for friends..." % GameManager.network_port, 8.0)
 	else:
 		show_message("Connecting to %s..." % GameManager.host_address, 8.0)
+
+
+func setup_plane_input() -> void:
+	if InputMap.has_action("plane_descend"): return
+	InputMap.add_action("plane_descend")
+	var shift := InputEventKey.new()
+	shift.physical_keycode = KEY_SHIFT
+	InputMap.action_add_event("plane_descend", shift)
 
 
 func setup_network() -> void:
@@ -151,6 +181,7 @@ func ensure_player_slot(index: int) -> void:
 		cooldowns.append(0.0)
 		scores.append(0)
 		owned_items.append({})
+		found_parts.append({})
 		active_vehicle.append("")
 		food_time.append(0.0)
 		player_health.append(MAX_HEALTH)
@@ -180,7 +211,7 @@ func request_world() -> void:
 	for body in players:
 		positions.append(body.position)
 		rotations.append(body.rotation.y)
-	receive_world.rpc_id(peer_id, snapshot, crystals, scores, owned_items, active_vehicle, food_time, player_health, enemy_states, positions, rotations, appearances, world_clock, balloon_flights)
+	receive_world.rpc_id(peer_id, snapshot, crystals, scores, owned_items, active_vehicle, food_time, player_health, enemy_states, positions, rotations, appearances, world_clock, balloon_flights, found_parts)
 
 
 func on_peer_disconnected(peer_id: int) -> void:
@@ -213,7 +244,7 @@ func on_server_disconnected() -> void:
 
 
 @rpc("authority", "reliable")
-func receive_world(snapshot: Array, crystals: Array, new_scores: Array, new_owned: Array, new_vehicles: Array, new_food_time: Array, new_health: Array, new_enemies: Dictionary, positions: Array, rotations: Array, new_appearances: Array, host_clock: float, flights: Array) -> void:
+func receive_world(snapshot: Array, crystals: Array, new_scores: Array, new_owned: Array, new_vehicles: Array, new_food_time: Array, new_health: Array, new_enemies: Dictionary, positions: Array, rotations: Array, new_appearances: Array, host_clock: float, flights: Array, new_found_parts: Array) -> void:
 	print("LAN client: received world with ", crystals.size(), " crystals")
 	if multiplayer.is_server(): return
 	for item in snapshot:
@@ -224,6 +255,8 @@ func receive_world(snapshot: Array, crystals: Array, new_scores: Array, new_owne
 	for i in new_scores.size():
 		scores[i] = int(new_scores[i])
 		player_health[i] = int(new_health[i])
+		found_parts[i] = new_found_parts[i].duplicate()
+	update_local_material_visibility()
 	update_health_ui()
 	for id in new_enemies:
 		if not enemy_states.has(id): continue
@@ -267,7 +300,7 @@ func set_player_appearance(index: int, data: Dictionary) -> void:
 		old.queue_free()
 	var model: Node3D = CharacterFactory.create(data.get("body_shape", "default"), data.get("animal_type", "rabbit"), data.get("body_color", Color.WHITE), data.get("shirt_type", "basic_tshirt"), data.get("pants_type", "jeans"), data.get("shoes_type", "sneakers"))
 	model.name = "CharacterModel"
-	model.position.y = 0.5 if active_vehicle[index] == "car" else 0.05
+	model.position.y = 0.75 if active_vehicle[index] == "plane" else 0.55 if active_vehicle[index] in ["car", "rowboat", "speedboat"] else 0.05
 	players[index].add_child(model)
 
 
@@ -276,6 +309,7 @@ func submit_position(pos: Vector3, rotation_y: float, speed: float) -> void:
 	if not multiplayer.is_server() or slot_for_sender() < 0: return
 	var index := slot_for_sender()
 	if pos.distance_to(players[index].position) > 8.0: return
+	if is_lake_water(pos) and not active_vehicle[index] in ["rowboat", "speedboat", "plane"]: return
 	players[index].position = pos
 	players[index].rotation.y = rotation_y
 	remote_walk_speed[index] = speed
@@ -336,8 +370,26 @@ func make_world() -> void:
 		add_ground_detail(Vector2(rng.randi_range(10, 42), rng.randi_range(8, 30)), Color("edd496"))
 	for i in 18:
 		add_ground_detail(Vector2(rng.randi_range(10, 42), rng.randi_range(-30, -8)), Color("656e73"))
+	for point in [Vector2(-49, -38), Vector2(-50, 35), Vector2(49, -36), Vector2(49, 35)]:
+		if point.distance_to(Vector2(-48, 38)) > 6.0 and point.distance_to(Vector2(48, 38)) > 6.0:
+			add_tree(point, "pine" if point.y < 0 else "oak")
+	for point in [Vector2(-52, 12), Vector2(52, -13), Vector2(-30, 39), Vector2(31, 40)]:
+		add_rock(point, 0.9)
+	var landing_clearances := [Vector2(42, -2), Vector2(-42, 2), Vector2(0, -30), Vector2(0, 30), Vector2(-47, -37), Vector2(47, -37), Vector2(-47, 37), Vector2(47, 37)]
+	for i in 48:
+		var edge := Vector2(rng.randf_range(-52, 52), rng.randf_range(-41, 41))
+		if absf(edge.x) < 43.0 and absf(edge.y) < 32.0: continue
+		var clear := true
+		for landing in landing_clearances:
+			if edge.distance_to(landing) < 7.0: clear = false
+		if not clear: continue
+		if edge.x < 0.0: add_tree(edge, "pine" if edge.y < 0.0 else "oak")
+		elif edge.y > 0.0: add_cactus(edge)
+		else: add_rock(edge, rng.randf_range(0.6, 1.1))
 	add_cemetery()
 	make_remote_places()
+	add_workshop()
+	make_plane_materials()
 
 
 func add_cemetery() -> void:
@@ -365,7 +417,7 @@ func add_cave(center: Vector2) -> void:
 func add_enemy(kind: String, point: Vector2, arena: Rect2) -> void:
 	var id := enemy_states.size()
 	var pos := Vector3(point.x, 2.2 if kind == "bat" else 0.0, point.y)
-	var maximum := 24 if kind == "bat" else 40
+	var maximum := 24 if kind == "bat" else 100 if kind == "polar_bear" else 160 if kind == "sasquatch" else 75 if kind == "shark" else 40
 	enemy_states[id] = {"kind": kind, "position": pos, "spawn": pos, "health": maximum, "maximum": maximum, "alive": true, "arena": arena, "attack_timer": 0.0, "impact_timer": 0.0, "respawn_timer": 0.0}
 	var enemy: Node3D = EnemyVisuals.create(kind)
 	enemy.name = "%s_%d" % [kind, id]
@@ -394,8 +446,8 @@ func add_island_ground(label: String, center: Vector2, size: Vector2, color: Col
 
 
 func make_remote_places() -> void:
-	add_island_ground("MountainIsland", Vector2(115, 0), Vector2(70, 68), Color("777b78"))
-	add_island_ground("WildwoodIsland", Vector2(-115, 0), Vector2(70, 68), Color("407c4e"))
+	add_island_ground("MountainIsland", Vector2(115, 0), Vector2(92, 84), Color("777b78"))
+	add_island_ground("WildwoodIsland", Vector2(-115, 0), Vector2(92, 84), Color("407c4e"))
 	for center in [Vector2(112, -17), Vector2(132, 14), Vector2(139, -19)]:
 		static_box("MountainBase", Vector3(center.x, 1.0, center.y), Vector3(18, 2.0, 18), Color("656c6d"))
 		static_box("MountainSlope", Vector3(center.x, 3.0, center.y), Vector3(13, 2.0, 13), Color("81898a"))
@@ -416,10 +468,193 @@ func make_remote_places() -> void:
 		add_animal("deer" if i % 3 else "rabbit", Vector2(-144, -94), Vector2(-28, 28))
 	for i in 6:
 		add_animal("goat", Vector2(95, 145), Vector2(-28, 28))
+	for point in [Vector2(155, -33), Vector2(156, 23), Vector2(81, 31)]:
+		if point.distance_to(Vector2(155, 36)) > 5.0: add_rock(point, 1.2)
+	for point in [Vector2(-154, -31), Vector2(-153, 16), Vector2(-78, -25), Vector2(-80, 34)]:
+		if point.distance_to(Vector2(-155, 36)) > 5.0: add_tree(point, "pine")
+	for i in 22:
+		var remote_edge := Vector2(rng.randf_range(72, 158), rng.randf_range(-39, 39))
+		if remote_edge.distance_to(Vector2(86, -2)) > 8.0 and remote_edge.distance_to(Vector2(155, 36)) > 6.0 and (remote_edge.x < 94.0 or remote_edge.x > 146.0 or absf(remote_edge.y) > 29.0):
+			add_rock(remote_edge, rng.randf_range(0.5, 1.0))
+	for i in 22:
+		var forest_edge := Vector2(rng.randf_range(-158, -72), rng.randf_range(-39, 39))
+		if forest_edge.distance_to(Vector2(-86, 2)) > 8.0 and forest_edge.distance_to(Vector2(-155, 36)) > 6.0 and (forest_edge.x < -147.0 or forest_edge.x > -91.0 or absf(forest_edge.y) > 29.0):
+			add_tree(forest_edge, "pine" if i % 3 else "oak")
 	add_balloon_station(Vector3(42, 1, -2), Vector3(86, 1, -2), "Mountains")
 	add_balloon_station(Vector3(86, 1, -2), Vector3(42, 1, -2), "Mainland")
 	add_balloon_station(Vector3(-42, 1, 2), Vector3(-86, 1, 2), "Wildwood")
 	add_balloon_station(Vector3(-86, 1, 2), Vector3(-42, 1, 2), "Mainland")
+	make_arctic_place()
+	make_lake_place()
+	add_balloon_station(Vector3(0, 1, -30), Vector3(0, 1, -80), "Arctic")
+	add_balloon_station(Vector3(0, 1, -80), Vector3(0, 1, -30), "Mainland")
+	add_balloon_station(Vector3(0, 1, 30), Vector3(0, 1, 80), "Lake")
+	add_balloon_station(Vector3(0, 1, 80), Vector3(0, 1, 30), "Mainland")
+	make_new_places()
+	for route in [
+		[Vector3(-47, 1, -37), Vector3(-90, 1, -82), "Crystal Caverns"],
+		[Vector3(47, 1, -37), Vector3(90, 1, -82), "Volcano"],
+		[Vector3(-47, 1, 37), Vector3(-90, 1, 82), "Golden Dunes"],
+		[Vector3(47, 1, 37), Vector3(90, 1, 82), "Jungle Ruins"]
+	]:
+		add_balloon_station(route[0], route[1], route[2])
+		add_balloon_station(route[1], route[0], "Mainland")
+
+
+func make_arctic_place() -> void:
+	add_island_ground("ArcticIsland", Vector2(0, -112), Vector2(128, 90), Color("e2eef0"))
+	for center in [Vector2(-32, -127), Vector2(31, -121), Vector2(-25, -92), Vector2(27, -98)]:
+		static_box("IceRidge", Vector3(center.x, 1.3, center.y), Vector3(13, 2.6, 9), Color("c6e0e6"))
+		mark_obstacle(center, 7.0)
+	for i in 17:
+		var point := Vector2(rng.randf_range(-46, 46), rng.randf_range(-141, -85))
+		if point.distance_to(Vector2(0, -80)) > 8.0: add_rock(point, rng.randf_range(0.5, 1.2))
+	for point in [Vector2(-15, -111), Vector2(17, -116), Vector2(-13, -132), Vector2(19, -92)]:
+		add_enemy("polar_bear", point, Rect2(-48, -143, 96, 61))
+	for point in [Vector2(0, -128), Vector2(30, -135)]:
+		add_enemy("sasquatch", point, Rect2(-48, -143, 96, 61))
+	for point in [Vector2(54, -126), Vector2(-52, -105), Vector2(22, -151)]:
+		if point.distance_to(Vector2(-55, -149)) > 6.0: add_rock(point, 1.1)
+
+
+func make_lake_place() -> void:
+	add_island_ground("LakeIsland", Vector2(0, 112), Vector2(126, 94), Color("70a864"))
+	add_ground_patch(Vector2(0, 112), Vector2(84, 58), Color("2983a9"))
+	var water := StaticBody3D.new()
+	water.name = "LakeWater"
+	water.position = Vector3(0, 0.04, 112)
+	var surface := MeshInstance3D.new()
+	var plane := BoxMesh.new()
+	plane.size = Vector3(84, 0.08, 58)
+	surface.mesh = plane
+	surface.material_override = material(Color("38a6c9"), 0.2)
+	water.add_child(surface)
+	var shape := CollisionShape3D.new()
+	var box_shape := BoxShape3D.new()
+	box_shape.size = plane.size
+	shape.shape = box_shape
+	water.add_child(shape)
+	add_child(water)
+	for point in [Vector2(-42, 95), Vector2(43, 102), Vector2(-44, 132), Vector2(42, 130)]:
+		add_tree(point, "oak")
+	for point in [Vector2(-16, 105), Vector2(17, 113), Vector2(0, 127)]:
+		add_enemy("shark", point, LAKE_WATER)
+	for kind_and_point in [["whale", Vector2(-17, 119)], ["whale", Vector2(19, 99)], ["fish", Vector2(-27, 99)], ["fish", Vector2(25, 124)], ["fish", Vector2(5, 107)]]:
+		add_animal_at(kind_and_point[0], kind_and_point[1])
+	for point in [Vector2(-55, 143), Vector2(52, 76), Vector2(-52, 77)]:
+		if point.distance_to(Vector2(55, 150)) > 6.0: add_tree(point, "oak")
+
+
+func make_new_places() -> void:
+	var caverns := Vector2(-125, -115)
+	var volcano := Vector2(125, -115)
+	var dunes := Vector2(-125, 115)
+	var jungle := Vector2(125, 115)
+	add_island_ground("CrystalCavernsIsland", caverns, Vector2(84, 80), Color("45445e"))
+	add_island_ground("VolcanoIsland", volcano, Vector2(84, 80), Color("714a40"))
+	add_island_ground("GoldenDunesIsland", dunes, Vector2(84, 80), Color("d8b970"))
+	add_island_ground("JungleRuinsIsland", jungle, Vector2(84, 80), Color("397b50"))
+	add_ground_patch(caverns + Vector2(-12, -12), Vector2(30, 27), Color("5d527c"))
+	add_ground_patch(volcano + Vector2(12, -11), Vector2(29, 25), Color("9a4b3d"))
+	add_ground_patch(dunes + Vector2(-9, 9), Vector2(34, 30), Color("e8cf86"))
+	add_ground_patch(jungle + Vector2(10, 8), Vector2(30, 28), Color("2e6849"))
+	for center in [caverns + Vector2(-14, 7), caverns + Vector2(17, -12), caverns + Vector2(10, 19)]:
+		static_box("CrystalSpire", Vector3(center.x, 2.4, center.y), Vector3(2.2, 4.8, 2.2), Color("9c80c3"))
+		mark_obstacle(center, 2.0)
+	for center in [volcano + Vector2(-17, -18), volcano + Vector2(15, 10), volcano + Vector2(22, -21)]:
+		add_hill(center, Color("75463c"), Color("bd5b3d"))
+	for center in [dunes + Vector2(-20, -15), dunes + Vector2(17, 14)]:
+		add_hill(center, Color("c7a35f"), Color("e9d18b"))
+	for center in [jungle + Vector2(-16, -12), jungle + Vector2(15, 19)]:
+		static_box("RuinsPillar", Vector3(center.x, 1.5, center.y), Vector3(2.5, 3.0, 2.5), Color("9a9f78"))
+		mark_obstacle(center, 2.2)
+	for i in 24:
+		var jungle_point := jungle + Vector2(rng.randf_range(-35, 35), rng.randf_range(-32, 32))
+		if jungle_point.distance_to(Vector2(90, 82)) > 9.0 and jungle_point.distance_to(Vector2(157, 148)) > 7.0:
+			add_tree(jungle_point, "oak")
+	for i in 13:
+		var dune_point := dunes + Vector2(rng.randf_range(-34, 34), rng.randf_range(-31, 31))
+		if dune_point.distance_to(Vector2(-90, 82)) > 8.0 and dune_point.distance_to(Vector2(-157, 148)) > 7.0:
+			add_cactus(dune_point)
+	for i in 12:
+		var lava_rock := volcano + Vector2(rng.randf_range(-34, 34), rng.randf_range(-31, 31))
+		if lava_rock.distance_to(Vector2(90, -82)) > 8.0 and lava_rock.distance_to(Vector2(157, -148)) > 7.0:
+			add_rock(lava_rock, rng.randf_range(0.7, 1.5))
+	for point in [caverns + Vector2(-3, -7), caverns + Vector2(13, 8)]:
+		add_enemy("bat", point, Rect2(caverns - Vector2(35, 33), Vector2(70, 66)))
+	for point in [jungle + Vector2(-7, 12), jungle + Vector2(17, -5)]:
+		add_enemy("skeleton", point, Rect2(jungle - Vector2(35, 33), Vector2(70, 66)))
+	for i in 3:
+		add_animal("deer" if i % 2 else "rabbit", Vector2(101, 146), Vector2(91, 145))
+
+
+func add_workshop() -> void:
+	add_ground_patch(Vector2.ZERO, Vector2(7, 7), Color("8d8066"))
+	static_box("PlaneWorkbench", Vector3(0, 0.55, 0), Vector3(2.2, 1.1, 1.3), Color("755c43"))
+	var sign := MeshInstance3D.new()
+	var sign_mesh := BoxMesh.new()
+	sign_mesh.size = Vector3(2.5, 0.8, 0.12)
+	sign.mesh = sign_mesh
+	sign.position = Vector3(0, 2.1, 0)
+	sign.material_override = material(Color("e8c581"), 0.8)
+	add_child(sign)
+	var light := OmniLight3D.new()
+	light.position = Vector3(0, 2.5, 0)
+	light.light_color = Color("ffe3a7")
+	light.light_energy = 0.45
+	light.omni_range = 5.0
+	add_child(light)
+
+
+func make_plane_materials() -> void:
+	for id in PLANE_PARTS:
+		var definition: Dictionary = PLANE_PARTS[id]
+		var root := Node3D.new()
+		root.name = "PlanePart_%s" % id
+		root.position = definition.position
+		var item := MeshInstance3D.new()
+		var mesh := SphereMesh.new()
+		mesh.radius = 0.28
+		mesh.height = 0.56
+		item.mesh = mesh
+		var glow := material(definition.color, 0.2)
+		glow.emission_enabled = true
+		glow.emission = definition.color
+		glow.emission_energy_multiplier = 0.85
+		item.material_override = glow
+		root.add_child(item)
+		var base := MeshInstance3D.new()
+		var base_mesh := CylinderMesh.new()
+		base_mesh.top_radius = 0.36
+		base_mesh.bottom_radius = 0.41
+		base_mesh.height = 0.12
+		base.mesh = base_mesh
+		base.position.y = -0.38
+		base.material_override = material(Color("313a4a"), 0.8)
+		root.add_child(base)
+		var light := OmniLight3D.new()
+		light.light_color = definition.color
+		light.light_energy = 0.2
+		light.omni_range = 2.6
+		root.add_child(light)
+		add_child(root)
+		material_nodes[id] = root
+
+
+func update_material_visuals(delta: float) -> void:
+	for id in material_nodes:
+		var node: Node3D = material_nodes[id]
+		node.rotation.y += delta * 0.7
+		node.position.y = float(PLANE_PARTS[id].position.y) + sin(world_clock * 2.2 + float(PLANE_PARTS.keys().find(id))) * 0.09
+
+
+func add_animal_at(kind: String, point: Vector2) -> void:
+	var creature: Node3D = AnimalVisuals.create(kind)
+	creature.position = Vector3(point.x, 0.25, point.y)
+	add_child(creature)
+	animals.append(creature)
+	animal_origins.append(creature.position)
+	animal_kinds.append(kind)
 
 
 func add_animal(kind: String, x_range: Vector2, z_range: Vector2) -> void:
@@ -618,7 +853,7 @@ func make_hud() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
 	var panel := ColorRect.new()
-	panel.color = Color(0.025, 0.04, 0.075, 0.82)
+	panel.color = Color(0.025, 0.04, 0.075, 0.96)
 	panel.position = Vector2(18, 18)
 	panel.size = Vector2(690, 112)
 	layer.add_child(panel)
@@ -627,13 +862,15 @@ func make_hud() -> void:
 	title.add_theme_font_size_override("font_size", 25)
 	title.text = "LAN CREATIVE WORLD"
 	panel.add_child(title)
+	style_hud_label(title, Color("ffffff"))
 	var controls := Label.new()
 	controls.position = Vector2(20, 47)
-	controls.text = "WASD / arrows move  |  Space jump  |  Q place  |  E remove  |  R attack\nB shop  |  M map  |  F board balloon near a landing."
+	controls.text = "WASD / arrows move  |  Space jump  |  Q place  |  E remove  |  R attack\nB shop  |  M map  |  P blueprint  |  F balloon / workshop"
 	controls.add_theme_color_override("font_color", Color("d8e8ff"))
 	panel.add_child(controls)
+	style_hud_label(controls, Color("e9f3ff"))
 	health_panel = ColorRect.new()
-	health_panel.color = Color(0.025, 0.04, 0.075, 0.82)
+	health_panel.color = Color(0.025, 0.04, 0.075, 0.96)
 	health_panel.position = Vector2(18, 140)
 	health_panel.size = Vector2(265, 72)
 	layer.add_child(health_panel)
@@ -645,15 +882,26 @@ func make_hud() -> void:
 	health_list.custom_minimum_size = Vector2(255, 72)
 	health_scroll.add_child(health_list)
 	for i in players.size(): add_health_bar(i)
+	score_panel = ColorRect.new()
+	score_panel.color = Color(0.025, 0.04, 0.075, 0.96)
+	score_panel.position = Vector2(718, 18)
+	score_panel.size = Vector2(310, 68)
+	layer.add_child(score_panel)
 	score_label = Label.new()
-	score_label.position = Vector2(735, 24)
-	score_label.add_theme_font_size_override("font_size", 22)
-	layer.add_child(score_label)
+	score_label.position = Vector2(10, 6)
+	score_label.add_theme_font_size_override("font_size", 20)
+	style_hud_label(score_label, Color("fff4ce"))
+	score_panel.add_child(score_label)
+	location_panel = ColorRect.new()
+	location_panel.color = Color(0.025, 0.04, 0.075, 0.96)
+	location_panel.position = Vector2(718, 94)
+	location_panel.size = Vector2(310, 34)
+	layer.add_child(location_panel)
 	location_label = Label.new()
-	location_label.position = Vector2(735, 103)
+	location_label.position = Vector2(10, 5)
 	location_label.add_theme_font_size_override("font_size", 17)
-	location_label.add_theme_color_override("font_color", Color("e8f4ce"))
-	layer.add_child(location_label)
+	style_hud_label(location_label, Color("e8f4ce"))
+	location_panel.add_child(location_label)
 	message_label = Label.new()
 	message_label.set_anchors_preset(Control.PRESET_CENTER_TOP)
 	message_label.position = Vector2(-350, 145)
@@ -661,6 +909,7 @@ func make_hud() -> void:
 	message_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	message_label.add_theme_font_size_override("font_size", 20)
 	message_label.add_theme_color_override("font_color", Color("fff0a6"))
+	style_hud_label(message_label, Color("fff0a6"))
 	layer.add_child(message_label)
 	var travel_label := Label.new()
 	travel_label.name = "TravelHint"
@@ -675,11 +924,19 @@ func make_hud() -> void:
 	travel_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	travel_label.add_theme_font_size_override("font_size", 20)
 	travel_label.add_theme_color_override("font_color", Color("fff0b8"))
+	style_hud_label(travel_label, Color("fff0b8"))
 	layer.add_child(travel_label)
 	make_minimap(layer)
 	make_shop(layer)
+	make_blueprint(layer)
 	update_score()
 	update_health_ui()
+
+
+func style_hud_label(label: Label, color: Color) -> void:
+	label.add_theme_color_override("font_color", color)
+	label.add_theme_color_override("font_outline_color", Color("07121f"))
+	label.add_theme_constant_override("outline_size", 3)
 
 
 func add_health_bar(index: int) -> void:
@@ -690,6 +947,7 @@ func add_health_bar(index: int) -> void:
 	var label := Label.new()
 	label.text = "P%d HP" % (index + 1)
 	label.position = Vector2(10, 9 + index * 31)
+	style_hud_label(label, Color("f6f9ff"))
 	health_list.add_child(label)
 	var bar := ProgressBar.new()
 	bar.position = Vector2(67, 10 + index * 31)
@@ -697,6 +955,12 @@ func add_health_bar(index: int) -> void:
 	bar.max_value = MAX_HEALTH
 	bar.value = MAX_HEALTH
 	bar.show_percentage = true
+	bar.add_theme_color_override("font_color", Color("ffffff"))
+	bar.add_theme_color_override("font_outline_color", Color("08111c"))
+	bar.add_theme_constant_override("outline_size", 3)
+	var track := StyleBoxFlat.new()
+	track.bg_color = Color("192a3e")
+	bar.add_theme_stylebox_override("background", track)
 	var fill := StyleBoxFlat.new()
 	fill.bg_color = palette[index % palette.size()]
 	bar.add_theme_stylebox_override("fill", fill)
@@ -712,7 +976,7 @@ func make_minimap(layer: CanvasLayer) -> void:
 	minimap_panel.offset_left = -250
 	minimap_panel.offset_right = -16
 	minimap_panel.offset_top = 16
-	minimap_panel.offset_bottom = 238
+	minimap_panel.offset_bottom = 296
 	minimap_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var background := StyleBoxFlat.new()
 	background.bg_color = Color(0.025, 0.04, 0.075, 0.92)
@@ -734,11 +998,11 @@ func make_minimap(layer: CanvasLayer) -> void:
 	minimap_view = MinimapView.new()
 	minimap_view.game = self
 	minimap_view.half_world = Vector2(WORLD_HALF)
-	minimap_view.custom_minimum_size = Vector2(216, 157)
+	minimap_view.custom_minimum_size = Vector2(216, 216)
 	minimap_view.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	column.add_child(minimap_view)
 	var legend := Label.new()
-	legend.text = "White you | Orange pal | Cyan gem\nPurple balloon | Tan wildlife"
+	legend.text = "White you | Orange pal | Cyan gem\nPurple balloon | Tan wildlife | Red enemy"
 	legend.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	legend.add_theme_font_size_override("font_size", 12)
 	legend.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -753,8 +1017,8 @@ func make_shop(layer: CanvasLayer) -> void:
 	shop_panel.anchor_bottom = 0.5
 	shop_panel.offset_left = -245
 	shop_panel.offset_right = 245
-	shop_panel.offset_top = -245
-	shop_panel.offset_bottom = 245
+	shop_panel.offset_top = -280
+	shop_panel.offset_bottom = 280
 	shop_panel.visible = false
 	layer.add_child(shop_panel)
 	var content := VBoxContainer.new()
@@ -780,17 +1044,67 @@ func make_shop(layer: CanvasLayer) -> void:
 	refresh_shop()
 
 
+func make_blueprint(layer: CanvasLayer) -> void:
+	blueprint_panel = PanelContainer.new()
+	blueprint_panel.anchor_left = 0.5
+	blueprint_panel.anchor_right = 0.5
+	blueprint_panel.anchor_top = 0.5
+	blueprint_panel.anchor_bottom = 0.5
+	blueprint_panel.offset_left = -315
+	blueprint_panel.offset_right = 315
+	blueprint_panel.offset_top = -270
+	blueprint_panel.offset_bottom = 270
+	blueprint_panel.visible = false
+	layer.add_child(blueprint_panel)
+	var column := VBoxContainer.new()
+	blueprint_panel.add_child(column)
+	blueprint_text = Label.new()
+	blueprint_text.add_theme_font_size_override("font_size", 18)
+	column.add_child(blueprint_text)
+	var close_button := Button.new()
+	close_button.text = "Close [P]"
+	close_button.pressed.connect(func(): blueprint_panel.visible = false)
+	column.add_child(close_button)
+	refresh_blueprint()
+
+
+func refresh_blueprint() -> void:
+	if not blueprint_text or found_parts.size() <= local_index(): return
+	var index := local_index()
+	var lines := ["PLANE ASSEMBLY BLUEPRINT", "", "Collect one glowing component in each destination:"]
+	for id in PLANE_PARTS:
+		var part: Dictionary = PLANE_PARTS[id]
+		lines.append("%s  %s — %s" % ["[FOUND]" if found_parts[index].has(id) else "[     ]", part.label, part.world])
+	lines.append("")
+	lines.append("1. Collect all eight components (%d/8 found)." % found_parts[index].size())
+	lines.append("2. Return to the workbench at the mainland crossroads.")
+	lines.append("3. Press F there to assemble and equip your plane.")
+	lines.append("4. Fly with WASD/arrows, Space to climb, Shift to descend.")
+	lines.append("5. Land at the workbench and press F to park or re-equip.")
+	blueprint_text.text = "\n".join(lines)
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.physical_keycode == KEY_B:
 			shop_panel.visible = not shop_panel.visible
+			if shop_panel.visible: blueprint_panel.visible = false
 			refresh_shop()
+			get_viewport().set_input_as_handled()
+		elif event.physical_keycode == KEY_P:
+			if owned_items[local_index()].has("blueprint"):
+				blueprint_panel.visible = not blueprint_panel.visible
+				if blueprint_panel.visible: shop_panel.visible = false
+				refresh_blueprint()
+			else:
+				show_message("Buy the plane blueprint in the crystal shop first.", 3.0)
 			get_viewport().set_input_as_handled()
 		elif event.physical_keycode == KEY_M:
 			toggle_minimap()
 			get_viewport().set_input_as_handled()
 		elif event.physical_keycode == KEY_F:
-			try_board_balloon()
+			if nearby_workshop(local_index()): try_use_workshop()
+			else: try_board_balloon()
 			get_viewport().set_input_as_handled()
 		elif event.physical_keycode == KEY_R:
 			try_attack()
@@ -807,6 +1121,54 @@ func nearby_balloon_station(index: int) -> int:
 		if players[index].position.distance_to(balloon_stations[station_index].from) <= 5.0:
 			return station_index
 	return -1
+
+
+func nearby_workshop(index: int) -> bool:
+	var pos := players[index].position
+	return Vector2(pos.x, pos.z).distance_to(Vector2.ZERO) <= 5.0 and pos.y <= 4.0
+
+
+func try_use_workshop() -> void:
+	var index := local_index()
+	if not connected or shop_panel.visible or blueprint_panel.visible or not balloon_flights[index].is_empty(): return
+	if multiplayer.is_server(): process_workshop(index)
+	else: request_workshop.rpc_id(1, players[index].position)
+
+
+@rpc("any_peer", "reliable")
+func request_workshop(reported_pos: Vector3) -> void:
+	if not multiplayer.is_server() or slot_for_sender() < 0: return
+	var index := slot_for_sender()
+	if Vector2(reported_pos.x, reported_pos.z).length() > 5.0 or reported_pos.y > 4.0: return
+	if reported_pos.distance_to(players[index].position) > 8.0: return
+	players[index].position = reported_pos
+	process_workshop(index)
+
+
+func process_workshop(index: int) -> void:
+	if not nearby_workshop(index) or not balloon_flights[index].is_empty(): return
+	if not owned_items[index].has("blueprint"):
+		shop_notice(index, "Buy the plane blueprint in the crystal shop first.")
+		return
+	if found_parts[index].size() < PLANE_PARTS.size():
+		shop_notice(index, "Plane parts found: %d/%d. The blueprint lists the worlds." % [found_parts[index].size(), PLANE_PARTS.size()])
+		return
+	if not owned_items[index].has("plane"):
+		owned_items[index]["plane"] = true
+		active_vehicle[index] = "plane"
+		shop_notice(index, "Plane assembled! Space climbs; Shift descends.")
+	elif active_vehicle[index] == "plane":
+		active_vehicle[index] = ""
+		shop_notice(index, "Plane parked at the workshop.")
+	else:
+		active_vehicle[index] = "plane"
+		shop_notice(index, "Plane equipped. Ready for takeoff!")
+	players[index].position.y = 1.0 if active_vehicle[index].is_empty() else 2.8
+	players[index].velocity = Vector3.ZERO
+	apply_equipment(index)
+	update_score()
+	sync_shop_state.rpc(scores, owned_items, active_vehicle, food_time)
+	respawn_player_remote.rpc(index, players[index].position)
 
 
 func try_board_balloon() -> void:
@@ -894,24 +1256,27 @@ func update_travel_hint() -> void:
 	if not balloon_flights[index].is_empty():
 		hint.text = "Floating to the next place..."
 		return
+	if nearby_workshop(index):
+		hint.text = "Press F: plane workshop (%d/%d parts)  |  P: blueprint" % [found_parts[index].size(), PLANE_PARTS.size()]
+		return
 	var station_index := nearby_balloon_station(index)
-	hint.text = "Press F: balloon to %s" % balloon_stations[station_index].destination if station_index >= 0 else ""
+	hint.text = "Press F: balloon to %s" % balloon_stations[station_index].destination if station_index >= 0 else "Plane: Space climb / Shift descend" if active_vehicle[index] == "plane" else ""
 
 
 func refresh_shop() -> void:
 	if not shop_status: return
 	var index := local_index()
-	shop_status.text = "Your crystals: %d" % scores[index]
+	shop_status.text = "Your crystals: %d   |   Plane parts: %d/%d" % [scores[index], found_parts[index].size(), PLANE_PARTS.size()]
 	for id in SHOP_ITEMS:
 		var definition: Dictionary = SHOP_ITEMS[id]
 		var suffix := " - %d crystals" % definition.cost
 		if owned_items[index].has(id):
-			if id in ["car", "motorbike", "bicycle"]:
+			if id in ["car", "motorbike", "bicycle", "rowboat", "speedboat"]:
 				suffix = " - Riding (click to park)" if active_vehicle[index] == id else " - Owned (click to ride)"
 			else:
 				suffix = " - Owned"
 		shop_buttons[id].text = definition.label + suffix
-		shop_buttons[id].disabled = owned_items[index].has(id) and id in ["lantern", "boots"]
+		shop_buttons[id].disabled = owned_items[index].has(id) and id in ["lantern", "boots", "blueprint", "sword"]
 
 
 func on_shop_item_pressed(id: String) -> void:
@@ -929,8 +1294,11 @@ func request_shop_action(id: String) -> void:
 
 func process_shop_action(index: int, id: String) -> void:
 	if not SHOP_ITEMS.has(id): return
+	if is_lake_water(players[index].position) and id in ["car", "motorbike", "bicycle", "rowboat", "speedboat"]:
+		shop_notice(index, "Stay in your boat until you reach shore.")
+		return
 	var notice := "Purchased %s!" % SHOP_ITEMS[id].label
-	if owned_items[index].has(id) and id in ["car", "motorbike", "bicycle"]:
+	if owned_items[index].has(id) and id in ["car", "motorbike", "bicycle", "rowboat", "speedboat"]:
 		active_vehicle[index] = "" if active_vehicle[index] == id else id
 		notice = "Parked your vehicle." if active_vehicle[index].is_empty() else "Now riding your %s." % id
 	else:
@@ -947,11 +1315,12 @@ func process_shop_action(index: int, id: String) -> void:
 			sync_health.rpc(player_health)
 		else:
 			owned_items[index][id] = true
-			if id in ["car", "motorbike", "bicycle"]:
+			if id in ["car", "motorbike", "bicycle", "rowboat", "speedboat"]:
 				active_vehicle[index] = id
 	apply_equipment(index)
 	update_score()
 	sync_shop_state.rpc(scores, owned_items, active_vehicle, food_time)
+	if id == "blueprint": notice = "Blueprint purchased! Press P to read the plane instructions."
 	shop_notice(index, notice)
 
 
@@ -1029,7 +1398,7 @@ func apply_equipment(index: int) -> void:
 		body.add_child(sword)
 	var model := body.get_node_or_null("CharacterModel")
 	if model:
-		model.position.y = 0.5 if active_vehicle[index] == "car" else 0.05
+		model.position.y = 0.75 if active_vehicle[index] == "plane" else 0.55 if active_vehicle[index] in ["car", "rowboat", "speedboat"] else 0.05
 
 
 func _physics_process(delta: float) -> void:
@@ -1041,7 +1410,7 @@ func _physics_process(delta: float) -> void:
 		food_time[i] = maxf(0.0, food_time[i] - delta)
 	if connected and balloon_flights[local_index()].is_empty(): move_player(local_index(), delta)
 	update_balloon_flights(delta)
-	if multiplayer.is_server(): update_enemies(delta)
+	if GameManager.network_mode == "host": update_enemies(delta)
 	else: interpolate_enemies(delta)
 	update_walk_animation(delta)
 	cooldowns[local_index()] = maxf(0.0, cooldowns[local_index()] - delta)
@@ -1057,6 +1426,8 @@ func _physics_process(delta: float) -> void:
 	if connected and pickup_timer >= 0.15:
 		pickup_timer = 0.0
 		check_local_crystal_pickups()
+		check_local_plane_materials()
+	update_material_visuals(delta)
 	update_camera(delta)
 	update_location_label()
 	update_travel_hint()
@@ -1072,8 +1443,9 @@ func _physics_process(delta: float) -> void:
 
 func move_player(index: int, delta: float) -> void:
 	var body := players[index]
+	var before := body.position
 	var input := Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
-	if shop_panel.visible: input = Vector2.ZERO
+	if shop_panel.visible or blueprint_panel.visible: input = Vector2.ZERO
 	if input.length() > 1.0:
 		input = input.normalized()
 	var direction := Vector3(input.x, 0, input.y)
@@ -1087,16 +1459,29 @@ func move_player(index: int, delta: float) -> void:
 		"bicycle": speed = maxf(speed, 10.0)
 		"motorbike": speed = maxf(speed, 13.0)
 		"car": speed = maxf(speed, 16.0)
+		"rowboat": speed = 6.0 if is_lake_water(body.position) else SPEED
+		"speedboat": speed = 18.0 if is_lake_water(body.position) else SPEED
+		"plane": speed = 21.0
 	body.velocity.x = direction.x * speed
 	body.velocity.z = direction.z * speed
-	var jumping := Input.is_physical_key_pressed(KEY_SPACE)
-	if body.is_on_floor():
-		if jumping:
-			body.velocity.y = JUMP_SPEED
+	if active_vehicle[index] == "plane":
+		var climb := float(Input.is_action_pressed("jump"))
+		var descend := float(Input.is_action_pressed("plane_descend"))
+		body.velocity.y = (climb - descend) * 10.0
 	else:
-		body.velocity.y -= GRAVITY * delta
+		var jumping := Input.is_physical_key_pressed(KEY_SPACE)
+		if body.is_on_floor():
+			if jumping:
+				body.velocity.y = JUMP_SPEED
+		else:
+			body.velocity.y -= GRAVITY * delta
 	body.move_and_slide()
+	if is_lake_water(body.position) and not active_vehicle[index] in ["rowboat", "speedboat", "plane"]:
+		body.position = before
+		body.velocity.x = 0.0
+		body.velocity.z = 0.0
 	if body.is_on_floor(): last_safe_position[index] = body.position
+	if active_vehicle[index] == "plane": body.position.y = clampf(body.position.y, 1.0, 45.0)
 	body.position.x = clampf(body.position.x, -WORLD_HALF.x + 1.0, WORLD_HALF.x - 1.0)
 	body.position.z = clampf(body.position.z, -WORLD_HALF.y + 1.0, WORLD_HALF.y - 1.0)
 	if body.position.y < -5.0:
@@ -1104,18 +1489,22 @@ func move_player(index: int, delta: float) -> void:
 		body.velocity = Vector3.ZERO
 
 
+func is_lake_water(pos: Vector3) -> bool:
+	return LAKE_WATER.has_point(Vector2(pos.x, pos.z))
+
+
 func update_animals() -> void:
 	for i in animals.size():
-		var phase := world_clock * (0.45 if animal_kinds[i] == "rabbit" else 0.25) + float(i) * 1.7
+		var phase := world_clock * (0.45 if animal_kinds[i] in ["rabbit", "fish"] else 0.25) + float(i) * 1.7
 		var origin := animal_origins[i]
 		var creature := animals[i]
-		creature.position = origin + Vector3(sin(phase) * 0.85, maxf(0.0, sin(phase * 7.0)) * 0.14 if animal_kinds[i] == "rabbit" else 0.0, cos(phase) * 0.85)
+		creature.position = origin + Vector3(sin(phase) * 0.85, maxf(0.0, sin(phase * 7.0)) * 0.14 if animal_kinds[i] == "rabbit" else sin(phase * 2.0) * 0.08 if animal_kinds[i] in ["fish", "whale"] else 0.0, cos(phase) * 0.85)
 		creature.rotation.y = atan2(cos(phase), -sin(phase))
 
 
 func try_attack() -> void:
 	var index := local_index()
-	if not connected or shop_panel.visible or not balloon_flights[index].is_empty(): return
+	if not connected or shop_panel.visible or blueprint_panel.visible or not balloon_flights[index].is_empty(): return
 	if multiplayer.is_server(): attack_nearest_enemy(index)
 	else: request_attack.rpc_id(1)
 
@@ -1137,6 +1526,7 @@ func attack_nearest_enemy(index: int) -> void:
 	for id in enemy_states:
 		var state: Dictionary = enemy_states[id]
 		if not state.alive: continue
+		if absf(state.position.y - origin.y) > 3.5: continue
 		var delta_2d := Vector3(state.position.x - origin.x, 0, state.position.z - origin.z)
 		var distance := delta_2d.length()
 		if distance < best_distance and (distance < 0.7 or front.dot(delta_2d.normalized()) > 0.2):
@@ -1163,10 +1553,11 @@ func update_enemies(delta: float) -> void:
 		state.attack_timer = maxf(0.0, float(state.attack_timer) - delta)
 		state.impact_timer = maxf(0.0, float(state.impact_timer) - delta)
 		var closest := -1
-		var closest_distance := 12.0 if state.kind == "skeleton" else 10.0
+		var closest_distance := 16.0 if state.kind in ["polar_bear", "sasquatch", "shark"] else 12.0 if state.kind == "skeleton" else 10.0
 		for i in players.size():
 			if i > 0 and not peer_slots.values().has(i): continue
 			if not balloon_flights[i].is_empty(): continue
+			if active_vehicle[i] == "plane" and players[i].position.y > 3.5: continue
 			var distance := Vector2(players[i].position.x - state.position.x, players[i].position.z - state.position.z).length()
 			if distance < closest_distance:
 				closest = i
@@ -1177,8 +1568,9 @@ func update_enemies(delta: float) -> void:
 		if motion.length() > 0.35:
 			var direction := motion.normalized()
 			var next_pos: Vector3 = state.position
-			next_pos.x += direction.x * (3.0 if state.kind == "skeleton" else 4.5) * delta
-			next_pos.z += direction.y * (3.0 if state.kind == "skeleton" else 4.5) * delta
+			var chase_speed := 6.0 if state.kind == "shark" else 3.7 if state.kind == "polar_bear" else 2.8 if state.kind == "sasquatch" else 3.0 if state.kind == "skeleton" else 4.5
+			next_pos.x += direction.x * chase_speed * delta
+			next_pos.z += direction.y * chase_speed * delta
 			var arena: Rect2 = state.arena
 			next_pos.x = clampf(next_pos.x, arena.position.x, arena.end.x)
 			next_pos.z = clampf(next_pos.z, arena.position.y, arena.end.y)
@@ -1203,23 +1595,26 @@ func update_enemies(delta: float) -> void:
 func resolve_enemy_contact(id: int, index: int) -> void:
 	var state: Dictionary = enemy_states[id]
 	if not state.alive: return
+	if active_vehicle[index] == "plane" and players[index].position.y > 3.5: return
 	var distance := Vector2(players[index].position.x - state.position.x, players[index].position.z - state.position.z).length()
 	if distance > 1.8: return
 	var vehicle := active_vehicle[index]
 	var speed := Vector2(players[index].velocity.x, players[index].velocity.z).length() if index == 0 else remote_walk_speed[index]
-	if vehicle in ["car", "motorbike", "bicycle"] and speed > 3.0 and state.impact_timer <= 0.0:
+	if vehicle in ["car", "motorbike", "bicycle", "rowboat", "speedboat"] and speed > 3.0 and state.impact_timer <= 0.0:
 		state.impact_timer = 1.5
 		state.attack_timer = 1.5
-		var force := 100 if vehicle == "car" else 30 if vehicle == "motorbike" else 12
+		var force := 100 if vehicle == "car" else 60 if vehicle == "speedboat" else 30 if vehicle == "motorbike" else 15 if vehicle == "rowboat" else 12
 		damage_enemy(id, force, index)
 		if vehicle == "bicycle": damage_player(index, 4)
 		elif vehicle == "motorbike": damage_player(index, 2)
 	elif state.attack_timer <= 0.0:
 		state.attack_timer = 1.6
-		var damage := 12 if state.kind == "skeleton" else 8
+		var damage := 100 if state.kind == "shark" else 28 if state.kind == "sasquatch" else 20 if state.kind == "polar_bear" else 12 if state.kind == "skeleton" else 8
 		if vehicle == "bicycle": damage = maxi(2, int(ceil(damage * 0.45)))
 		elif vehicle == "motorbike": damage = 3
 		elif vehicle == "car": damage = 1
+		elif vehicle == "rowboat": damage = 18 if state.kind == "shark" else maxi(2, int(ceil(damage * 0.5)))
+		elif vehicle == "speedboat": damage = 5 if state.kind == "shark" else 2
 		damage_player(index, damage)
 
 
@@ -1331,7 +1726,7 @@ func update_walk_animation(delta: float) -> void:
 
 
 func handle_building() -> void:
-	if shop_panel.visible or not balloon_flights[local_index()].is_empty(): return
+	if shop_panel.visible or blueprint_panel.visible or not balloon_flights[local_index()].is_empty(): return
 	if Input.is_physical_key_pressed(KEY_Q): request_build(true)
 	if Input.is_physical_key_pressed(KEY_E): request_build(false)
 
@@ -1448,13 +1843,25 @@ func spawn_crystals(count: int) -> void:
 		next_crystal_id += 1
 		var point := Vector2.ZERO
 		for attempt in 60:
-			match i % 4:
-				0, 1:
-					point = Vector2(rng.randi_range(-44, 44), rng.randi_range(-31, 31))
+			match i % 9:
+				0:
+					point = Vector2(rng.randi_range(-51, 51), rng.randi_range(-40, 40))
+				1:
+					point = Vector2(rng.randi_range(73, 157), rng.randi_range(-37, 37))
 				2:
-					point = Vector2(rng.randi_range(83, 147), rng.randi_range(-30, 30))
+					point = Vector2(rng.randi_range(-157, -73), rng.randi_range(-37, 37))
 				3:
-					point = Vector2(rng.randi_range(-147, -83), rng.randi_range(-30, 30))
+					point = Vector2(rng.randi_range(-59, 59), rng.randi_range(-151, -73))
+				4:
+					point = Vector2(rng.randi_range(-58, 58), rng.randi_range(71, 153))
+				5:
+					point = Vector2(rng.randi_range(-162, -88), rng.randi_range(-150, -80))
+				6:
+					point = Vector2(rng.randi_range(88, 162), rng.randi_range(-150, -80))
+				7:
+					point = Vector2(rng.randi_range(-162, -88), rng.randi_range(80, 150))
+				8:
+					point = Vector2(rng.randi_range(88, 162), rng.randi_range(80, 150))
 			if crystal_spot_clear(point): break
 		var pos := Vector3(point.x, 0.75, point.y)
 		add_crystal(id, pos)
@@ -1464,6 +1871,9 @@ func spawn_crystals(count: int) -> void:
 func crystal_spot_clear(point: Vector2) -> bool:
 	for zone in obstacle_zones:
 		if zone.has_point(point): return false
+	for id in PLANE_PARTS:
+		var part_pos: Vector3 = PLANE_PARTS[id].position
+		if Vector2(part_pos.x, part_pos.z).distance_to(point) < 3.0: return false
 	for crystal in crystal_nodes.values():
 		if Vector2(crystal.position.x, crystal.position.z).distance_to(point) < 3.0: return false
 	return true
@@ -1521,10 +1931,57 @@ func check_local_crystal_pickups() -> void:
 		else: request_crystal.rpc_id(1, id, players[index].position)
 
 
+func check_local_plane_materials() -> void:
+	var index := local_index()
+	for id in PLANE_PARTS:
+		if found_parts[index].has(id): continue
+		if players[index].position.distance_to(PLANE_PARTS[id].position) > 1.5: continue
+		if multiplayer.is_server(): collect_plane_material(index, id)
+		else: request_plane_material.rpc_id(1, id, players[index].position)
+
+
+@rpc("any_peer", "reliable")
+func request_plane_material(id: String, reported_pos: Vector3) -> void:
+	if not multiplayer.is_server() or slot_for_sender() < 0 or not PLANE_PARTS.has(id): return
+	var index := slot_for_sender()
+	if reported_pos.distance_to(PLANE_PARTS[id].position) > 1.5: return
+	if reported_pos.distance_to(players[index].position) > 8.0: return
+	players[index].position = reported_pos
+	collect_plane_material(index, id)
+
+
+func collect_plane_material(index: int, id: String) -> void:
+	if not PLANE_PARTS.has(id) or found_parts[index].has(id): return
+	found_parts[index][id] = true
+	update_local_material_visibility()
+	material_found_remote.rpc(index, id)
+	shop_notice(index, "Found %s! Plane parts: %d/%d" % [PLANE_PARTS[id].label, found_parts[index].size(), PLANE_PARTS.size()])
+	refresh_shop()
+	refresh_blueprint()
+
+
+@rpc("authority", "reliable")
+func material_found_remote(index: int, id: String) -> void:
+	if not PLANE_PARTS.has(id): return
+	ensure_player_slot(index)
+	found_parts[index][id] = true
+	update_local_material_visibility()
+	refresh_shop()
+	refresh_blueprint()
+
+
+func update_local_material_visibility() -> void:
+	var index := local_index()
+	if index >= found_parts.size(): return
+	for id in material_nodes:
+		material_nodes[id].visible = not found_parts[index].has(id)
+
+
 @rpc("any_peer", "reliable")
 func request_crystal(id: int, reported_pos: Vector3) -> void:
 	if not multiplayer.is_server() or slot_for_sender() < 0 or not crystal_nodes.has(id): return
 	var index := slot_for_sender()
+	if is_lake_water(reported_pos) and not active_vehicle[index] in ["rowboat", "speedboat", "plane"]: return
 	if reported_pos.distance_to(crystal_nodes[id].position) > 2.0: return
 	if reported_pos.distance_to(players[index].position) > 8.0: return
 	players[index].position = reported_pos
@@ -1569,6 +2026,8 @@ func update_score() -> void:
 				row.clear()
 		if not row.is_empty(): lines.append("   ".join(row))
 		score_label.text = "\n".join(lines)
+		score_panel.size.y = 14.0 + float(lines.size()) * 27.0
+		location_panel.position.y = score_panel.position.y + score_panel.size.y + 8.0
 	refresh_shop()
 
 
@@ -1581,8 +2040,14 @@ func update_location_label() -> void:
 	if not location_label: return
 	var pos := players[local_index()].position
 	var area := "Central crossroads"
-	if pos.x <= -80.0: area = "Wildwood forest"
-	elif pos.x >= 80.0:
+	if pos.x <= -83.0 and pos.z <= -75.0: area = "Crystal Caverns"
+	elif pos.x >= 83.0 and pos.z <= -75.0: area = "Volcano"
+	elif pos.x <= -83.0 and pos.z >= 75.0: area = "Golden Dunes"
+	elif pos.x >= 83.0 and pos.z >= 75.0: area = "Jungle Ruins"
+	elif pos.z <= -67.0 and absf(pos.x) <= 64.0: area = "Arctic tundra"
+	elif pos.z >= 65.0 and absf(pos.x) <= 63.0: area = "Lake water" if is_lake_water(pos) else "Lake shore"
+	elif pos.x <= -69.0: area = "Wildwood forest"
+	elif pos.x >= 69.0:
 		area = "Bat cave" if Vector2(pos.x, pos.z).distance_to(Vector2(100, 18)) < 12.0 or Vector2(pos.x, pos.z).distance_to(Vector2(130, -3)) < 11.0 else "Mountain range"
 	elif pos.x >= 16.0 and pos.x <= 37.0 and pos.z >= -29.0 and pos.z <= -9.0: area = "Cemetery"
 	elif pos.x < -8.0 and pos.z < -7.0: area = "Pine forest"

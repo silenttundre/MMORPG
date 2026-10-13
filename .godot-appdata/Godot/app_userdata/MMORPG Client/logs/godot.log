@@ -2,9 +2,8 @@ Godot Engine v4.6.3.stable.official.7d41c59c4 - https://godotengine.org
 
 ERROR: Failed to read the root certificate store.
    at: get_system_ca_certificates (platform/windows/os_windows.cpp:2570)
-LAN setup: join port 24570
-MULTI_LAN_HOST_OK
+LAN setup: join port 24573
+PLANE_LAN_HOST_OK
 ted
-LAN client: received world with 37 crystals
-MULTI_LAN_FIRST_OK
-
+LAN client: received world with 36 crystals
+PLANE_LAN_GUEST_OK

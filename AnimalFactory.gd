@@ -4,6 +4,18 @@ extends RefCounted
 static func create(kind: String) -> Node3D:
 	var root := Node3D.new()
 	root.name = "WildAnimal"
+	if kind == "whale":
+		_add_box(root, Vector3(0, 0.35, 0), Vector3(1.8, 0.75, 3.6), Color("527f9d"))
+		_add_box(root, Vector3(0, 0.35, 2.0), Vector3(2.0, 0.14, 0.6), Color("426d89"))
+		for side in [-1.0, 1.0]:
+			_add_box(root, Vector3(side * 1.1, 0.25, -0.2), Vector3(1.0, 0.13, 0.65), Color("426d89"))
+			_add_box(root, Vector3(side * 0.5, 0.57, -1.2), Vector3(0.13, 0.13, 0.1), Color("24394b"))
+		return root
+	if kind == "fish":
+		_add_box(root, Vector3(0, 0.15, 0), Vector3(0.42, 0.35, 0.85), Color("f1aa5d"))
+		_add_box(root, Vector3(0, 0.15, 0.55), Vector3(0.7, 0.08, 0.37), Color("e68154"))
+		_add_box(root, Vector3(0.17, 0.22, -0.28), Vector3(0.06, 0.07, 0.06), Color("253348"))
+		return root
 	var fur := Color("aa754c") if kind == "deer" else Color("dad6c5") if kind == "goat" else Color("d3b595")
 	var scale_factor := 0.65 if kind == "rabbit" else 1.0
 	_add_box(root, Vector3(0, 0.85, 0), Vector3(0.85, 0.7, 1.3) * scale_factor, fur)

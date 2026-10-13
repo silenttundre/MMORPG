@@ -29,7 +29,7 @@ func run_test() -> void:
 	if mode == "host":
 		if game.obstacle_zones.size() < 80:
 			push_error("Expanded terrain did not generate")
-		if game.balloon_stations.size() != 4 or game.animals.size() != 17:
+		if game.balloon_stations.size() != 16 or game.animals.size() != 25:
 			push_error("Remote places, balloons, or wildlife did not generate")
 		game.add_creation(Vector3i(6, 0, 6), Color.RED)
 		game.scores[0] = 20
@@ -55,7 +55,7 @@ func run_test() -> void:
 			push_error("Client did not receive initial crystals")
 		if game.obstacle_zones.size() < 80:
 			push_error("Client terrain did not generate")
-		if game.balloon_stations.size() != 4 or game.animals.size() != 17:
+		if game.balloon_stations.size() != 16 or game.animals.size() != 25:
 			push_error("Client remote places or wildlife did not generate")
 		if game.balloon_flights[0].is_empty() or not game.players[0].get_node_or_null("HotAirBalloon"):
 			push_error("Client did not see host's balloon flight")

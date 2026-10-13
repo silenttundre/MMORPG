@@ -12,7 +12,7 @@ func run_test() -> void:
 	await process_frame
 	await process_frame
 	var game := current_scene
-	if game.enemy_states.size() != 10 or game.health_bars.size() != 2:
+	if game.enemy_states.size() != 23 or game.health_bars.size() != 2:
 		push_error("Enemy or player health UI setup failed")
 		quit()
 		return
