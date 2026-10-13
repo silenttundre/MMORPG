@@ -1,6 +1,6 @@
 extends Node3D
 
-# Two-player LAN creative playground. The host owns shared world state.
+# LAN creative playground. The host owns shared world state.
 const CharacterFactory = preload("res://ProceduralCharacter.gd")
 const VehicleVisuals = preload("res://VehicleFactory.gd")
 const MinimapView = preload("res://Minimap.gd")
@@ -15,6 +15,7 @@ const SPEED := 7.0
 const JUMP_SPEED := 8.5
 const GRAVITY := 22.0
 const MAX_HEALTH := 100
+const MAX_PLAYERS := 32
 const SHOP_ITEMS := {
 	"food": {"label": "Snack - heal 30 HP + speed boost", "cost": 2},
 	"lantern": {"label": "Lantern - portable light", "cost": 3},
@@ -48,8 +49,14 @@ var palette := [Color("ef6f6c"), Color("ffd166"), Color("61d095"), Color("5aa9e6
 var crystal_nodes: Dictionary = {}
 var next_crystal_id := 0
 var connected := false
-var guest_peer_id := 0
+var peer_slots: Dictionary = {}
+var my_slot := 0
+var appearances: Array[Dictionary] = []
+var health_panel: ColorRect
+var health_scroll: ScrollContainer
+var health_list: Control
 var position_timer := 0.0
+var pickup_timer := 0.0
 var walk_phase: Array[float] = [0.0, 0.0]
 var walk_amount: Array[float] = [0.0, 0.0]
 var remote_walk_speed: Array[float] = [0.0, 0.0]
@@ -77,12 +84,13 @@ func _ready() -> void:
 	UIManager.visible = false
 	make_world()
 	make_players()
+	appearances = [GameManager.character_data.duplicate(), {}]
 	make_camera()
 	make_hud()
 	setup_network()
 	if GameManager.network_mode == "host":
 		spawn_crystals(CRYSTALS_PER_ROUND)
-		show_message("Hosting on UDP port %d. Waiting for Player 2..." % GameManager.network_port, 8.0)
+		show_message("Hosting on UDP port %d. Waiting for friends..." % GameManager.network_port, 8.0)
 	else:
 		show_message("Connecting to %s..." % GameManager.host_address, 8.0)
 
@@ -92,7 +100,7 @@ func setup_network() -> void:
 	var peer := ENetMultiplayerPeer.new()
 	var error := OK
 	if GameManager.network_mode == "host":
-		error = peer.create_server(GameManager.network_port, 1)
+		error = peer.create_server(GameManager.network_port, MAX_PLAYERS - 1)
 	else:
 		error = peer.create_client(GameManager.host_address, GameManager.network_port)
 	if error != OK:
@@ -103,19 +111,63 @@ func setup_network() -> void:
 	multiplayer.peer_disconnected.connect(on_peer_disconnected)
 	multiplayer.connected_to_server.connect(on_connected_to_server)
 	multiplayer.connection_failed.connect(on_connection_failed)
+	multiplayer.server_disconnected.connect(on_server_disconnected)
 	if GameManager.network_mode == "host":
 		connected = true
 
 
 func on_peer_connected(peer_id: int) -> void:
 	if not multiplayer.is_server(): return
-	guest_peer_id = peer_id
-	show_message("Player 2 joined! Build and explore together.", 4.0)
+	var index := 1
+	while peer_slots.values().has(index): index += 1
+	peer_slots[peer_id] = index
+	ensure_player_slot(index)
+	players[index].visible = true
+	assign_player_slot.rpc_id(peer_id, index)
+	show_message("Player %d joined!" % (index + 1), 4.0)
+
+
+@rpc("authority", "reliable")
+func assign_player_slot(index: int) -> void:
+	my_slot = index
+	ensure_player_slot(index)
+	connected = true
+	if health_scroll: health_scroll.scroll_vertical = index * 31
+	set_player_appearance(index, GameManager.character_data)
+	send_appearance.rpc_id(1, GameManager.character_data)
+	request_world.rpc_id(1)
+
+
+func slot_for_sender() -> int:
+	return int(peer_slots.get(multiplayer.get_remote_sender_id(), -1))
+
+
+func ensure_player_slot(index: int) -> void:
+	while players.size() <= index:
+		var slot := players.size()
+		var spawn := Vector3(-2.0 + float(slot % 6) * 2.0, 1.0, 2.0 + float(slot / 6) * 2.0)
+		players.append(make_player("Player %d" % (slot + 1), spawn, Color("ff9b9b"), "fox"))
+		facing.append(Vector3.FORWARD)
+		cooldowns.append(0.0)
+		scores.append(0)
+		owned_items.append({})
+		active_vehicle.append("")
+		food_time.append(0.0)
+		player_health.append(MAX_HEALTH)
+		attack_cooldown.append(0.0)
+		walk_phase.append(0.0)
+		walk_amount.append(0.0)
+		remote_walk_speed.append(0.0)
+		last_safe_position.append(spawn)
+		balloon_flights.append({})
+		appearances.append({})
+		add_health_bar(slot)
+	update_score()
 
 
 @rpc("any_peer", "reliable")
 func request_world() -> void:
-	if not multiplayer.is_server() or multiplayer.get_remote_sender_id() != guest_peer_id: return
+	if not multiplayer.is_server() or slot_for_sender() < 0: return
 	var peer_id := multiplayer.get_remote_sender_id()
 	var snapshot: Array = []
 	for key in creations:
@@ -123,41 +175,55 @@ func request_world() -> void:
 	var crystals: Array = []
 	for id in crystal_nodes:
 		crystals.append([id, crystal_nodes[id].position])
-	receive_world.rpc_id(peer_id, snapshot, crystals, scores, owned_items, active_vehicle, food_time, player_health, enemy_states, players[0].position, GameManager.character_data, world_clock, balloon_flights)
+	var positions: Array = []
+	var rotations: Array = []
+	for body in players:
+		positions.append(body.position)
+		rotations.append(body.rotation.y)
+	receive_world.rpc_id(peer_id, snapshot, crystals, scores, owned_items, active_vehicle, food_time, player_health, enemy_states, positions, rotations, appearances, world_clock, balloon_flights)
 
 
-func on_peer_disconnected(_peer_id: int) -> void:
-	show_message("Other player disconnected.", 20.0)
-	if multiplayer.is_server():
-		guest_peer_id = 0
-		players[1].position = Vector3(2, 1, 2)
+func on_peer_disconnected(peer_id: int) -> void:
+	if multiplayer.is_server() and peer_slots.has(peer_id):
+		var index: int = peer_slots[peer_id]
+		peer_slots.erase(peer_id)
+		players[index].visible = false
+		player_left.rpc(index)
+		show_message("Player %d disconnected." % (index + 1), 5.0)
+
+
+@rpc("authority", "reliable")
+func player_left(index: int) -> void:
+	if index < players.size(): players[index].visible = false
 
 
 func on_connected_to_server() -> void:
 	print("LAN client: connected")
-	connected = true
-	show_message("Connected! Build and explore together.", 4.0)
-	set_player_appearance(1, GameManager.character_data)
-	send_appearance.rpc_id(1, GameManager.character_data)
-	request_world.rpc_id(1)
+	show_message("Connected; joining world...", 4.0)
 
 
 func on_connection_failed() -> void:
+	connected = false
 	show_message("Could not connect. Check the host IP and Windows firewall (UDP %d)." % GameManager.network_port, 30.0)
 
 
+func on_server_disconnected() -> void:
+	connected = false
+	show_message("Disconnected from host. Return to menu to reconnect.", 30.0)
+
+
 @rpc("authority", "reliable")
-func receive_world(snapshot: Array, crystals: Array, new_scores: Array, new_owned: Array, new_vehicles: Array, new_food_time: Array, new_health: Array, new_enemies: Dictionary, host_pos: Vector3, host_appearance: Dictionary, host_clock: float, flights: Array) -> void:
+func receive_world(snapshot: Array, crystals: Array, new_scores: Array, new_owned: Array, new_vehicles: Array, new_food_time: Array, new_health: Array, new_enemies: Dictionary, positions: Array, rotations: Array, new_appearances: Array, host_clock: float, flights: Array) -> void:
 	print("LAN client: received world with ", crystals.size(), " crystals")
 	if multiplayer.is_server(): return
 	for item in snapshot:
 		add_creation(item[0], item[1])
 	for item in crystals:
 		add_crystal(item[0], item[1])
-	scores[0] = int(new_scores[0])
-	scores[1] = int(new_scores[1])
-	player_health[0] = int(new_health[0])
-	player_health[1] = int(new_health[1])
+	ensure_player_slot(new_scores.size() - 1)
+	for i in new_scores.size():
+		scores[i] = int(new_scores[i])
+		player_health[i] = int(new_health[i])
 	update_health_ui()
 	for id in new_enemies:
 		if not enemy_states.has(id): continue
@@ -165,29 +231,36 @@ func receive_world(snapshot: Array, crystals: Array, new_scores: Array, new_owne
 		enemy_targets[id] = enemy_states[id].position
 		update_enemy_visual(id)
 	apply_shop_state(new_owned, new_vehicles, new_food_time)
-	players[0].position = host_pos
+	for i in positions.size():
+		if i != local_index(): players[i].position = positions[i]
+		players[i].rotation.y = rotations[i]
+		set_player_appearance(i, new_appearances[i])
+		if i == 0 or i == local_index() or not new_appearances[i].is_empty(): players[i].visible = true
 	world_clock = host_clock
-	for i in 2:
+	for i in flights.size():
 		if not flights[i].is_empty(): start_balloon_visual(i)
 		balloon_flights[i] = flights[i].duplicate()
-	set_player_appearance(0, host_appearance)
 	update_score()
 
 
 @rpc("any_peer", "reliable")
 func send_appearance(data: Dictionary) -> void:
-	if not multiplayer.is_server() or multiplayer.get_remote_sender_id() != guest_peer_id: return
-	set_player_appearance(1, data)
-	apply_appearance.rpc(data)
+	if not multiplayer.is_server() or slot_for_sender() < 0: return
+	var index := slot_for_sender()
+	set_player_appearance(index, data)
+	apply_appearance.rpc(index, data)
 
 
 @rpc("authority", "reliable")
-func apply_appearance(data: Dictionary) -> void:
-	set_player_appearance(1, data)
+func apply_appearance(index: int, data: Dictionary) -> void:
+	ensure_player_slot(index)
+	set_player_appearance(index, data)
+	players[index].visible = true
 
 
 func set_player_appearance(index: int, data: Dictionary) -> void:
 	if data.is_empty(): return
+	appearances[index] = data.duplicate()
 	var old := players[index].get_node_or_null("CharacterModel")
 	if old:
 		old.name = "OldCharacterModel"
@@ -200,16 +273,18 @@ func set_player_appearance(index: int, data: Dictionary) -> void:
 
 @rpc("any_peer", "unreliable")
 func submit_position(pos: Vector3, rotation_y: float, speed: float) -> void:
-	if not multiplayer.is_server() or multiplayer.get_remote_sender_id() != guest_peer_id: return
-	if pos.distance_to(players[1].position) > 4.0: return
-	players[1].position = pos
-	players[1].rotation.y = rotation_y
-	remote_walk_speed[1] = speed
-	relay_position.rpc(1, pos, rotation_y, speed)
+	if not multiplayer.is_server() or slot_for_sender() < 0: return
+	var index := slot_for_sender()
+	if pos.distance_to(players[index].position) > 8.0: return
+	players[index].position = pos
+	players[index].rotation.y = rotation_y
+	remote_walk_speed[index] = speed
+	relay_position.rpc(index, pos, rotation_y, speed)
 
 
 @rpc("authority", "unreliable")
 func relay_position(index: int, pos: Vector3, rotation_y: float, speed: float) -> void:
+	ensure_player_slot(index)
 	if index == local_index(): return
 	players[index].position = pos
 	players[index].rotation.y = rotation_y
@@ -217,7 +292,7 @@ func relay_position(index: int, pos: Vector3, rotation_y: float, speed: float) -
 
 
 func local_index() -> int:
-	return 0 if GameManager.network_mode == "host" else 1
+	return my_slot
 
 
 func make_world() -> void:
@@ -507,6 +582,7 @@ func make_players() -> void:
 	var chosen := GameManager.character_data
 	players.append(make_player("Player 1", Vector3(-2, 1, 2), chosen.get("body_color", Color("78c6ff")), chosen.get("animal_type", "rabbit")))
 	players.append(make_player("Player 2", Vector3(2, 1, 2), Color("ff9b9b"), "fox"))
+	players[1].visible = false
 
 
 func make_player(label: String, spawn: Vector3, color: Color, animal: String) -> CharacterBody3D:
@@ -549,34 +625,26 @@ func make_hud() -> void:
 	var title := Label.new()
 	title.position = Vector2(20, 10)
 	title.add_theme_font_size_override("font_size", 25)
-	title.text = "TWO PLAYER CREATIVE WORLD"
+	title.text = "LAN CREATIVE WORLD"
 	panel.add_child(title)
 	var controls := Label.new()
 	controls.position = Vector2(20, 47)
 	controls.text = "WASD / arrows move  |  Space jump  |  Q place  |  E remove  |  R attack\nB shop  |  M map  |  F board balloon near a landing."
 	controls.add_theme_color_override("font_color", Color("d8e8ff"))
 	panel.add_child(controls)
-	var health_panel := ColorRect.new()
+	health_panel = ColorRect.new()
 	health_panel.color = Color(0.025, 0.04, 0.075, 0.82)
 	health_panel.position = Vector2(18, 140)
 	health_panel.size = Vector2(265, 72)
 	layer.add_child(health_panel)
-	for i in 2:
-		var label := Label.new()
-		label.text = "P%d HP" % (i + 1)
-		label.position = Vector2(10, 9 + i * 31)
-		health_panel.add_child(label)
-		var bar := ProgressBar.new()
-		bar.position = Vector2(67, 10 + i * 31)
-		bar.size = Vector2(185, 18)
-		bar.max_value = MAX_HEALTH
-		bar.value = MAX_HEALTH
-		bar.show_percentage = true
-		var fill := StyleBoxFlat.new()
-		fill.bg_color = Color("77d779") if i == 0 else Color("e9aa69")
-		bar.add_theme_stylebox_override("fill", fill)
-		health_panel.add_child(bar)
-		health_bars.append(bar)
+	health_scroll = ScrollContainer.new()
+	health_scroll.position = Vector2.ZERO
+	health_scroll.size = health_panel.size
+	health_panel.add_child(health_scroll)
+	health_list = Control.new()
+	health_list.custom_minimum_size = Vector2(255, 72)
+	health_scroll.add_child(health_list)
+	for i in players.size(): add_health_bar(i)
 	score_label = Label.new()
 	score_label.position = Vector2(735, 24)
 	score_label.add_theme_font_size_override("font_size", 22)
@@ -612,6 +680,28 @@ func make_hud() -> void:
 	make_shop(layer)
 	update_score()
 	update_health_ui()
+
+
+func add_health_bar(index: int) -> void:
+	if not health_panel or health_bars.size() > index: return
+	health_panel.size.y = minf(288.0, 10.0 + float(index + 1) * 31.0)
+	health_scroll.size = health_panel.size
+	health_list.custom_minimum_size.y = 10.0 + float(index + 1) * 31.0
+	var label := Label.new()
+	label.text = "P%d HP" % (index + 1)
+	label.position = Vector2(10, 9 + index * 31)
+	health_list.add_child(label)
+	var bar := ProgressBar.new()
+	bar.position = Vector2(67, 10 + index * 31)
+	bar.size = Vector2(175, 18)
+	bar.max_value = MAX_HEALTH
+	bar.value = MAX_HEALTH
+	bar.show_percentage = true
+	var fill := StyleBoxFlat.new()
+	fill.bg_color = palette[index % palette.size()]
+	bar.add_theme_stylebox_override("fill", fill)
+	health_list.add_child(bar)
+	health_bars.append(bar)
 
 
 func make_minimap(layer: CanvasLayer) -> void:
@@ -729,13 +819,18 @@ func try_board_balloon() -> void:
 	if multiplayer.is_server():
 		begin_balloon_flight(index, station_index)
 	else:
-		request_balloon.rpc_id(1, station_index)
+		request_balloon.rpc_id(1, station_index, players[index].position)
 
 
 @rpc("any_peer", "reliable")
-func request_balloon(station_index: int) -> void:
-	if not multiplayer.is_server() or multiplayer.get_remote_sender_id() != guest_peer_id: return
-	begin_balloon_flight(1, station_index)
+func request_balloon(station_index: int, reported_pos: Vector3) -> void:
+	if not multiplayer.is_server() or slot_for_sender() < 0: return
+	var index := slot_for_sender()
+	if station_index < 0 or station_index >= balloon_stations.size(): return
+	if reported_pos.distance_to(balloon_stations[station_index].from) > 5.0: return
+	if reported_pos.distance_to(players[index].position) > 8.0: return
+	players[index].position = reported_pos
+	begin_balloon_flight(index, station_index)
 
 
 func begin_balloon_flight(index: int, station_index: int) -> void:
@@ -767,7 +862,7 @@ func start_balloon_visual(index: int) -> void:
 
 
 func update_balloon_flights(delta: float) -> void:
-	for i in 2:
+	for i in players.size():
 		if balloon_flights[i].is_empty(): continue
 		var flight: Dictionary = balloon_flights[i]
 		flight.elapsed += delta
@@ -828,8 +923,8 @@ func on_shop_item_pressed(id: String) -> void:
 
 @rpc("any_peer", "reliable")
 func request_shop_action(id: String) -> void:
-	if not multiplayer.is_server() or multiplayer.get_remote_sender_id() != guest_peer_id: return
-	process_shop_action(1, id)
+	if not multiplayer.is_server() or slot_for_sender() < 0: return
+	process_shop_action(slot_for_sender(), id)
 
 
 func process_shop_action(index: int, id: String) -> void:
@@ -863,8 +958,11 @@ func process_shop_action(index: int, id: String) -> void:
 func shop_notice(index: int, notice: String) -> void:
 	if index == 0:
 		show_message(notice, 3.0)
-	elif guest_peer_id != 0:
-		receive_shop_notice.rpc_id(guest_peer_id, notice)
+	else:
+		for peer_id in peer_slots:
+			if peer_slots[peer_id] == index:
+				receive_shop_notice.rpc_id(peer_id, notice)
+				break
 
 
 @rpc("authority", "reliable")
@@ -874,14 +972,16 @@ func receive_shop_notice(notice: String) -> void:
 
 @rpc("authority", "reliable")
 func sync_shop_state(new_scores: Array, new_owned: Array, new_vehicles: Array, new_food_time: Array) -> void:
-	for i in 2:
+	ensure_player_slot(new_scores.size() - 1)
+	for i in new_scores.size():
 		scores[i] = int(new_scores[i])
 	apply_shop_state(new_owned, new_vehicles, new_food_time)
 	update_score()
 
 
 func apply_shop_state(new_owned: Array, new_vehicles: Array, new_food_time: Array) -> void:
-	for i in 2:
+	ensure_player_slot(new_owned.size() - 1)
+	for i in new_owned.size():
 		owned_items[i] = new_owned[i].duplicate()
 		active_vehicle[i] = str(new_vehicles[i])
 		food_time[i] = float(new_food_time[i])
@@ -935,11 +1035,11 @@ func apply_equipment(index: int) -> void:
 func _physics_process(delta: float) -> void:
 	world_clock += delta
 	update_animals()
-	for i in 2:
+	for i in players.size():
 		attack_cooldown[i] = maxf(0.0, attack_cooldown[i] - delta)
-	for i in 2:
+	for i in players.size():
 		food_time[i] = maxf(0.0, food_time[i] - delta)
-	if balloon_flights[local_index()].is_empty(): move_player(local_index(), delta)
+	if connected and balloon_flights[local_index()].is_empty(): move_player(local_index(), delta)
 	update_balloon_flights(delta)
 	if multiplayer.is_server(): update_enemies(delta)
 	else: interpolate_enemies(delta)
@@ -953,6 +1053,10 @@ func _physics_process(delta: float) -> void:
 		var speed := Vector2(players[i].velocity.x, players[i].velocity.z).length()
 		if multiplayer.is_server(): relay_position.rpc(i, players[i].position, players[i].rotation.y, speed)
 		else: submit_position.rpc_id(1, players[i].position, players[i].rotation.y, speed)
+	pickup_timer += delta
+	if connected and pickup_timer >= 0.15:
+		pickup_timer = 0.0
+		check_local_crystal_pickups()
 	update_camera(delta)
 	update_location_label()
 	update_travel_hint()
@@ -1018,8 +1122,8 @@ func try_attack() -> void:
 
 @rpc("any_peer", "reliable")
 func request_attack() -> void:
-	if not multiplayer.is_server() or multiplayer.get_remote_sender_id() != guest_peer_id: return
-	attack_nearest_enemy(1)
+	if not multiplayer.is_server() or slot_for_sender() < 0: return
+	attack_nearest_enemy(slot_for_sender())
 
 
 func attack_nearest_enemy(index: int) -> void:
@@ -1060,7 +1164,8 @@ func update_enemies(delta: float) -> void:
 		state.impact_timer = maxf(0.0, float(state.impact_timer) - delta)
 		var closest := -1
 		var closest_distance := 12.0 if state.kind == "skeleton" else 10.0
-		for i in 2:
+		for i in players.size():
+			if i > 0 and not peer_slots.values().has(i): continue
 			if not balloon_flights[i].is_empty(): continue
 			var distance := Vector2(players[i].position.x - state.position.x, players[i].position.z - state.position.z).length()
 			if distance < closest_distance:
@@ -1138,7 +1243,7 @@ func damage_player(index: int, amount: int) -> void:
 	player_health[index] = maxi(0, player_health[index] - amount)
 	if player_health[index] == 0:
 		player_health[index] = MAX_HEALTH
-		var safe_pos := Vector3(-2.0 + index * 4.0, 2.0, 2.0)
+		var safe_pos := Vector3(-2.0 + float(index % 6) * 2.0, 2.0, 2.0 + float(index / 6) * 2.0)
 		players[index].position = safe_pos
 		players[index].velocity = Vector3.ZERO
 		last_safe_position[index] = safe_pos
@@ -1150,8 +1255,8 @@ func damage_player(index: int, amount: int) -> void:
 
 @rpc("authority", "reliable")
 func sync_health(values: Array) -> void:
-	player_health[0] = int(values[0])
-	player_health[1] = int(values[1])
+	ensure_player_slot(values.size() - 1)
+	for i in values.size(): player_health[i] = int(values[i])
 	update_health_ui()
 
 
@@ -1244,10 +1349,11 @@ func request_build(placing: bool) -> void:
 
 @rpc("any_peer", "reliable")
 func request_build_on_host(placing: bool, column: Vector2i) -> void:
-	if not multiplayer.is_server() or multiplayer.get_remote_sender_id() != guest_peer_id: return
-	if Vector2(players[1].position.x, players[1].position.z).distance_to(Vector2(column.x, column.y)) > 3.5: return
-	if placing: place_block(1, column)
-	else: remove_block(1, column)
+	if not multiplayer.is_server() or slot_for_sender() < 0: return
+	var index := slot_for_sender()
+	if Vector2(players[index].position.x, players[index].position.z).distance_to(Vector2(column.x, column.y)) > 3.5: return
+	if placing: place_block(index, column)
+	else: remove_block(index, column)
 
 
 func target_column(index: int) -> Vector2i:
@@ -1400,17 +1506,29 @@ func crystal_touched(body: Node3D, id: int) -> void:
 			index = i
 			break
 	if index < 0: return
+	if multiplayer.is_server() and index > 0 and not peer_slots.values().has(index): return
 	if not multiplayer.is_server():
-		if index == 1: request_crystal.rpc_id(1, id)
+		if index == local_index(): request_crystal.rpc_id(1, id, players[index].position)
 		return
 	collect_crystal(index, id)
 
 
+func check_local_crystal_pickups() -> void:
+	var index := local_index()
+	for id in crystal_nodes.keys():
+		if players[index].position.distance_to(crystal_nodes[id].position) > 1.2: continue
+		if multiplayer.is_server(): collect_crystal(index, id)
+		else: request_crystal.rpc_id(1, id, players[index].position)
+
+
 @rpc("any_peer", "reliable")
-func request_crystal(id: int) -> void:
-	if not multiplayer.is_server() or multiplayer.get_remote_sender_id() != guest_peer_id or not crystal_nodes.has(id): return
-	if players[1].position.distance_to(crystal_nodes[id].position) > 2.0: return
-	collect_crystal(1, id)
+func request_crystal(id: int, reported_pos: Vector3) -> void:
+	if not multiplayer.is_server() or slot_for_sender() < 0 or not crystal_nodes.has(id): return
+	var index := slot_for_sender()
+	if reported_pos.distance_to(crystal_nodes[id].position) > 2.0: return
+	if reported_pos.distance_to(players[index].position) > 8.0: return
+	players[index].position = reported_pos
+	collect_crystal(index, id)
 
 
 func collect_crystal(index: int, id: int) -> void:
@@ -1435,14 +1553,22 @@ func delete_crystal(id: int) -> void:
 @rpc("authority", "reliable")
 func crystal_collected_remote(id: int, new_scores: Array) -> void:
 	delete_crystal(id)
-	scores[0] = int(new_scores[0])
-	scores[1] = int(new_scores[1])
+	ensure_player_slot(new_scores.size() - 1)
+	for i in new_scores.size(): scores[i] = int(new_scores[i])
 	update_score()
 
 
 func update_score() -> void:
 	if score_label:
-		score_label.text = "CRYSTALS\nP1  %02d     P2  %02d" % [scores[0], scores[1]]
+		var lines := ["CRYSTALS"]
+		var row: Array[String] = []
+		for i in scores.size():
+			row.append("P%d %02d" % [i + 1, scores[i]])
+			if row.size() == 4:
+				lines.append("   ".join(row))
+				row.clear()
+		if not row.is_empty(): lines.append("   ".join(row))
+		score_label.text = "\n".join(lines)
 	refresh_shop()
 
 

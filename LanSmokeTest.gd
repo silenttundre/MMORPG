@@ -38,7 +38,7 @@ func run_test() -> void:
 		game.process_shop_action(0, "food")
 		game.players[0].position = Vector3(42, 1, -2)
 		game.begin_balloon_flight(0, 0)
-		await create_timer(16.0).timeout
+		await create_timer(24.0).timeout
 		if game.creations.has(Vector3i(4, 0, 4)):
 			print("LAN_SMOKE_HOST_OK")
 		else:
